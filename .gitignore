@@ -1,3 +1,5 @@
 __pycache__/
 ckpt/*
 outputs_occlusionformer
+FLUX/*
+AGENTS.md
