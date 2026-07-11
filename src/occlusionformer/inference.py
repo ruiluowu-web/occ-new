@@ -346,3 +346,214 @@ def inference(
     output = FluxPipelineOutput(images=image)
     
     return output
+
+
+@torch.no_grad()
+def inference_edit(
+    pipeline: FluxPipeline,
+    layout_transformer,
+    init_image,
+    layout: Optional[Layout] = None,
+    enable_layout: bool = True,
+    grounding_ratio: float = 1.0,
+    edit_strength: float = 0.7,
+    seed: int = 0,
+    **params,
+):
+    self = pipeline
+
+    (
+        prompt, prompt_2, height, width,
+        num_inference_steps, timesteps, guidance_scale,
+        num_images_per_prompt, generator, latents,
+        prompt_embeds, pooled_prompt_embeds,
+        output_type, return_dict,
+        joint_attention_kwargs,
+        callback_on_step_end, callback_on_step_end_tensor_inputs,
+        max_sequence_length,
+    ) = prepare_params(**params)
+
+    height = height or self.default_sample_size * self.vae_scale_factor
+    width = width or self.default_sample_size * self.vae_scale_factor
+
+    self.check_inputs(
+        prompt, prompt_2, height, width,
+        prompt_embeds=prompt_embeds,
+        pooled_prompt_embeds=pooled_prompt_embeds,
+        callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
+        max_sequence_length=max_sequence_length,
+    )
+
+    self._guidance_scale = guidance_scale
+    self._joint_attention_kwargs = joint_attention_kwargs
+    self._interrupt = False
+
+    batch_size = 1
+    device = self._execution_device
+
+    lora_scale = (
+        self.joint_attention_kwargs.get("scale", None)
+        if self.joint_attention_kwargs is not None
+        else None
+    )
+    (prompt_embeds, pooled_prompt_embeds, text_ids) = self.encode_prompt(
+        prompt=prompt, prompt_2=prompt_2,
+        prompt_embeds=prompt_embeds,
+        pooled_prompt_embeds=pooled_prompt_embeds,
+        device=device,
+        num_images_per_prompt=num_images_per_prompt,
+        max_sequence_length=max_sequence_length,
+        lora_scale=lora_scale,
+    )
+
+    vae_scale = self.vae_scale_factor
+    latent_h = 2 * (int(height) // (vae_scale * 2))
+    latent_w = 2 * (int(width) // (vae_scale * 2))
+
+    if isinstance(init_image, Image.Image):
+        img_tensor = self.image_processor.preprocess(init_image)
+    else:
+        img_tensor = init_image
+    img_tensor = img_tensor.to(device=device, dtype=self.dtype)
+    z_0_decoded = self.vae.encode(img_tensor).latent_dist.mode()
+    z_0 = (z_0_decoded - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+
+    num_channels_latents = layout_transformer.config.in_channels // 4
+    g = torch.Generator(device=device).manual_seed(seed)
+    shape = (batch_size, num_channels_latents, latent_h, latent_w)
+    z_1_unpacked = torch.randn(shape, generator=g, device=device, dtype=prompt_embeds.dtype)
+    z_1 = self._pack_latents(z_1_unpacked, batch_size, num_channels_latents, latent_h, latent_w)
+
+    z_0_packed = self._pack_latents(z_0, batch_size, num_channels_latents, latent_h, latent_w)
+    latents = edit_strength * z_1 + (1.0 - edit_strength) * z_0_packed
+    latents = latents.to(dtype=prompt_embeds.dtype)
+
+    latent_image_ids = self._prepare_latent_image_ids(
+        batch_size, latent_h // 2, latent_w // 2, device, prompt_embeds.dtype
+    )
+
+    use_condition = layout is not None
+    if use_condition:
+        latent_h_layout = int(height) // vae_scale // 2
+        latent_w_layout = int(width) // vae_scale // 2
+        layout_kwargs = encode_layout_flux(layout, self, (latent_h_layout, latent_w_layout))
+
+        if (hasattr(layout, 'occluder') and hasattr(layout, 'bbox_masks')
+                and layout.occluder is not None and layout.bbox_masks is not None):
+            bbox_masks = layout.bbox_masks
+            bbox_masks_ds = torch.nn.functional.interpolate(
+                bbox_masks.unsqueeze(1).to(device=device, dtype=prompt_embeds.dtype),
+                size=(latent_h_layout * 2, latent_w_layout * 2),
+                mode='bilinear', align_corners=False
+            ).squeeze(1)
+
+            packed_bbox_masks = []
+            for layout_idx in range(bbox_masks_ds.shape[0]):
+                mask_2d = bbox_masks_ds[layout_idx]
+                mask_packed = FluxPipeline._pack_latents(
+                    mask_2d.unsqueeze(0).unsqueeze(0),
+                    batch_size=1, num_channels_latents=1,
+                    height=latent_h_layout * 2, width=latent_w_layout * 2,
+                )
+                packed_bbox_masks.append(mask_packed.squeeze(0)[..., 0:1])
+
+            layout_kwargs["layout"]["occlusion"] = layout.occluder
+            layout_kwargs["layout"]["bbox_mask"] = packed_bbox_masks
+            layout_kwargs["layout"]["img_height"] = latent_h_layout
+            layout_kwargs["layout"]["img_width"] = latent_w_layout
+
+        enable_layout = bool(enable_layout)
+    else:
+        layout_kwargs = None
+        enable_layout = False
+
+    image_seq_len = latents.shape[1]
+    mu = calculate_shift(
+        image_seq_len,
+        self.scheduler.config.base_image_seq_len,
+        self.scheduler.config.max_image_seq_len,
+        self.scheduler.config.base_shift,
+        self.scheduler.config.max_shift,
+    )
+    sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+    if getattr(self.scheduler.config, "use_flow_sigmas", False):
+        sigmas = None
+    full_timesteps, _ = retrieve_timesteps(
+        self.scheduler, num_inference_steps, device, timesteps, sigmas, mu=mu,
+    )
+
+    edit_start_idx = int(torch.searchsorted(
+        -full_timesteps, -edit_strength, right=False
+    ).clamp(0, len(full_timesteps) - 1).item())
+    timesteps = full_timesteps[edit_start_idx:]
+
+    num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
+    self._num_timesteps = len(timesteps)
+
+    num_grounding_steps = int(grounding_ratio * len(timesteps))
+
+    with self.progress_bar(total=len(timesteps)) as progress_bar:
+        for i, t in enumerate(timesteps):
+            if self.interrupt:
+                continue
+
+            if i == num_grounding_steps:
+                enable_layout = False
+
+            timestep = t.expand(latents.shape[0]).to(latents.dtype)
+
+            if layout_transformer.config.guidance_embeds:
+                guidance = torch.tensor([guidance_scale], device=device)
+                guidance = guidance.expand(latents.shape[0])
+            else:
+                guidance = None
+
+            transformer_output = layout_transformer(
+                layout_kwargs=layout_kwargs,
+                enable_layout=enable_layout,
+                hidden_states=latents,
+                timestep=timestep / 1000,
+                guidance=guidance,
+                pooled_projections=pooled_prompt_embeds,
+                encoder_hidden_states=prompt_embeds,
+                txt_ids=text_ids,
+                img_ids=latent_image_ids,
+                joint_attention_kwargs=self.joint_attention_kwargs,
+                return_dict=True,
+            )
+
+            noise_pred = transformer_output.sample
+            latents_dtype = latents.dtype
+            latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+
+            if latents.dtype != latents_dtype:
+                if torch.backends.mps.is_available():
+                    latents = latents.to(latents_dtype)
+
+            if callback_on_step_end is not None:
+                callback_kwargs = {}
+                for k in callback_on_step_end_tensor_inputs:
+                    callback_kwargs[k] = locals()[k]
+                callback_outputs = callback_on_step_end(self, i, t, callback_kwargs)
+                latents = callback_outputs.pop("latents", latents)
+                prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
+
+            if i == len(timesteps) - 1 or (
+                (i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0
+            ):
+                progress_bar.update()
+
+    if output_type == "latent":
+        image = latents
+    else:
+        latents = self._unpack_latents(latents, height, width, vae_scale)
+        latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
+        image = self.vae.decode(latents.to(self.vae.dtype), return_dict=False)[0]
+        image = self.image_processor.postprocess(image, output_type=output_type)
+
+    self.maybe_free_model_hooks()
+
+    if not return_dict:
+        return (image,)
+
+    return FluxPipelineOutput(images=image)

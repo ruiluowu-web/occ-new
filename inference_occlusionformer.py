@@ -33,6 +33,9 @@ class InferenceConfig:
     dtype: torch.dtype
     device: torch.device
     overwrite: bool
+    edit_remove_ids: Optional[str]
+    init_image: Optional[str]
+    edit_strength: float
 
 
 def parse_args() -> InferenceConfig:
@@ -104,6 +107,26 @@ def parse_args() -> InferenceConfig:
         help="Disable layout conditioning.",
     )
     parser.add_argument(
+        "--edit_remove_ids",
+        type=str,
+        default=None,
+        help="Comma-separated 1-based instance IDs to remove (e.g. '2,5'). "
+             "Enables edit mode: requires --init_image and the seed used to generate it.",
+    )
+    parser.add_argument(
+        "--init_image",
+        type=str,
+        default=None,
+        help="Path to the pre-generated image for editing. Required with --edit_remove_ids.",
+    )
+    parser.add_argument(
+        "--edit_strength",
+        type=float,
+        default=0.7,
+        help="Edit strength in [0, 1]. Higher = more freedom in removed regions. "
+             "Default 0.7 is safe when using the same --seed as the original generation.",
+    )
+    parser.add_argument(
         "--dtype",
         type=str,
         choices=["bf16", "fp16", "fp32"],
@@ -132,6 +155,10 @@ def parse_args() -> InferenceConfig:
     if args.enable_layout and args.disable_layout:
         parser.error("--enable_layout and --disable_layout are mutually exclusive.")
 
+    if args.edit_remove_ids is not None:
+        if args.init_image is None:
+            parser.error("--edit_remove_ids requires --init_image")
+
     if args.dtype == "bf16":
         dtype = torch.bfloat16
     elif args.dtype == "fp16":
@@ -159,6 +186,9 @@ def parse_args() -> InferenceConfig:
         dtype=dtype,
         device=torch.device(args.device),
         overwrite=args.overwrite,
+        edit_remove_ids=args.edit_remove_ids,
+        init_image=args.init_image,
+        edit_strength=args.edit_strength,
     )
 
 
@@ -428,6 +458,83 @@ def run_single_layout(
     )
 
 
+def run_edit_layout(
+    path: Path,
+    init_image_path: str,
+    remove_ids: List[int],
+    edit_strength: float,
+    pipe: FluxPipeline,
+    layout_transformer,
+    cfg: InferenceConfig,
+) -> Tuple[Path, Path]:
+    from src.occlusionformer.inference import inference_edit
+
+    with open(path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    prompt = str(payload.get("prompt", payload.get("caption", ""))).strip()
+    if not prompt:
+        raise ValueError(f"Missing prompt in {path}")
+
+    height = int(payload.get("height", 1024))
+    width = int(payload.get("width", 1024))
+    annos = payload.get("annos", [])
+    if not isinstance(annos, list) or not annos:
+        raise ValueError(f"Missing annos in {path}")
+
+    boxes = _layout_boxes_from_json(annos)
+    if not boxes:
+        raise ValueError(f"No valid boxes in {path}")
+    validate_boxes(boxes)
+
+    full_layout = build_layout_from_boxes(boxes, height, width)
+
+    remove_0based = [rid - 1 for rid in remove_ids if 1 <= rid <= len(boxes)]
+    keep_ids = [i for i in range(len(boxes)) if i not in remove_0based]
+
+    if not keep_ids:
+        raise ValueError("Cannot remove all instances — at least one must remain.")
+
+    edited_layout = full_layout.filter_entries(keep_ids, height, width)
+
+    kept_captions = [boxes[i]["caption"].strip() for i in keep_ids if boxes[i].get("caption", "").strip()]
+    if kept_captions:
+        final_prompt = f"{prompt}, {', '.join(kept_captions)}"
+    else:
+        final_prompt = prompt
+
+    init_image = Image.open(init_image_path).convert("RGB")
+
+    generator = torch.Generator(device=cfg.device.type).manual_seed(cfg.seed)
+    result = inference_edit(
+        pipeline=pipe,
+        layout_transformer=layout_transformer,
+        init_image=init_image,
+        layout=edited_layout,
+        prompt=final_prompt,
+        generator=generator,
+        num_inference_steps=int(cfg.steps),
+        guidance_scale=float(cfg.guidance_scale),
+        enable_layout=bool(cfg.enable_layout),
+        grounding_ratio=float(cfg.grounding_ratio),
+        edit_strength=float(edit_strength),
+        seed=int(cfg.seed),
+        height=height,
+        width=width,
+    )
+    out_img = result.images[0]
+    overlay = edited_layout.show_layout_on_image(out_img)
+
+    edit_stem = f"{path.stem}_edit_rm{'_'.join(str(r) for r in remove_ids)}_s{edit_strength}"
+    return save_results(
+        output_dir=Path(cfg.output_dir),
+        stem=edit_stem,
+        image=out_img,
+        overlay=overlay,
+        overwrite=cfg.overwrite,
+    )
+
+
 def main() -> None:
     cfg = parse_args()
     print(f"[INFO] device={cfg.device}, dtype={cfg.dtype}, enable_layout={cfg.enable_layout}")
@@ -439,6 +546,19 @@ def main() -> None:
         device=cfg.device,
     )
     print("[INFO] model loaded")
+
+    if cfg.edit_remove_ids is not None:
+        remove_ids = [int(x.strip()) for x in cfg.edit_remove_ids.split(",") if x.strip()]
+        paths = load_layout_json_paths(cfg.layout_json, cfg.layout_dir)
+        try:
+            img_path, overlay_path = run_edit_layout(
+                paths[0], cfg.init_image, remove_ids, cfg.edit_strength,
+                pipe, layout_transformer, cfg,
+            )
+            print(f"[EDIT] OK -> {img_path.name}, {overlay_path.name}")
+        except Exception as exc:
+            print(f"[EDIT] FAIL: {exc}")
+        return
 
     paths = load_layout_json_paths(cfg.layout_json, cfg.layout_dir)
     print(f"[INFO] total layout files: {len(paths)}")

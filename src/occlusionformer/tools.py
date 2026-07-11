@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 import types
 import math
 
@@ -412,6 +412,59 @@ class Layout:
                     now_idx = (u * point_per_line + v) * 2
                     self.boxes[i][now_idx] = x1 + u * step_x
                     self.boxes[i][now_idx + 1] = y1 + v * step_y
+
+    def _extract_raw_text(self, idx: int) -> str:
+        full = self.texts[idx]
+        cat = self.categorys[idx]
+        if cat and full.startswith(cat):
+            return full[len(cat):].strip(", ")
+        return full
+
+    def filter_entries(self, keep_ids: List[int], height: int, width: int) -> 'Layout':
+        keep_ids = sorted(set(keep_ids))
+        if not keep_ids:
+            empty = Layout([], max_objs=self.max_objs, point_num=self.point_num)
+            if hasattr(self, 'occluder') and self.occluder is not None:
+                empty.occluder = []
+            if hasattr(self, 'bbox_masks') and self.bbox_masks is not None:
+                empty.bbox_masks = torch.zeros((0, height, width))
+            return empty
+
+        old_to_new: Dict[int, int] = {}
+        annos = []
+        for new_idx, old_idx in enumerate(keep_ids):
+            if old_idx >= self.max_objs or self.cond_masks[old_idx] == 0:
+                continue
+            old_to_new[old_idx] = new_idx
+            x1n, y1n, x2n, y2n = self.boxes[old_idx][:4].tolist()
+            annos.append({
+                "category": self.categorys[old_idx],
+                "text": self._extract_raw_text(old_idx),
+                "bbox": [
+                    int(round(x1n * width)),
+                    int(round(y1n * height)),
+                    int(round((x2n - x1n) * width)),
+                    int(round((y2n - y1n) * height)),
+                ],
+                "hw": [height, width],
+            })
+
+        new_layout = Layout(annos, max_objs=self.max_objs, point_num=self.point_num)
+
+        if hasattr(self, 'occluder') and self.occluder is not None:
+            new_occluder: List[List[int]] = [[] for _ in range(len(annos))]
+            for new_idx, old_idx in enumerate(keep_ids):
+                if old_idx < len(self.occluder):
+                    for occ in self.occluder[old_idx]:
+                        if occ in old_to_new:
+                            new_occluder[new_idx].append(old_to_new[occ])
+            new_layout.occluder = new_occluder
+
+        if hasattr(self, 'bbox_masks') and self.bbox_masks is not None:
+            keep_tensor = torch.tensor(keep_ids, dtype=torch.long)
+            new_layout.bbox_masks = self.bbox_masks[keep_tensor]
+
+        return new_layout
 
     def show_layout_on_image(self, image: Image.Image) -> Image.Image:
         def draw(img_bgr: np.ndarray, boxes: torch.Tensor, labels: list[str]) -> np.ndarray:
