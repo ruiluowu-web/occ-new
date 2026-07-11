@@ -506,6 +506,10 @@ def run_edit_layout(
         y2c = min(height, int(y2))
         edit_mask[y1c:y2c, x1c:x2c] = 1.0
 
+    print(f"[EDIT DEBUG] edit_mask sum={edit_mask.sum().item():.0f}, "
+          f"ratio={edit_mask.sum().item()/(height*width)*100:.1f}%, "
+          f"removed_ids={remove_ids}, bboxes={removed_bboxes}")
+
     kernel_size = int(2 * round(3 * 5.0) + 1)
     x_k = torch.arange(kernel_size, dtype=torch.float32) - kernel_size // 2
     g = torch.exp(-x_k**2 / (2 * 5.0**2))

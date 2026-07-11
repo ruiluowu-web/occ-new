@@ -452,6 +452,12 @@ def inference_edit(
             height=latent_h, width=latent_w,
         )
         packed_mask = packed_mask[:, :, :1]
+        print(f"[EDIT DEBUG] packed_mask shape={packed_mask.shape}, "
+              f"min={packed_mask.min().item():.3f}, max={packed_mask.max().item():.3f}, "
+              f"mean={packed_mask.mean().item():.3f}, "
+              f"sum>0.5={(packed_mask > 0.5).sum().item()}")
+        print(f"[EDIT DEBUG] t_0_val={t_0_val:.1f}, start_idx={start_idx}, "
+              f"edit_steps={len(timesteps)}, t_range=[{timesteps[0].item():.0f},{timesteps[-1].item():.0f}]")
 
     latent_image_ids = self._prepare_latent_image_ids(
         batch_size, latent_h // 2, latent_w // 2, device, prompt_embeds.dtype
@@ -524,6 +530,11 @@ def inference_edit(
 
     self.scheduler._step_index = start_idx
 
+    if packed_mask is not None:
+        z_init_diff = (latents - z_0_packed).abs().mean().item()
+        print(f"[EDIT DEBUG] z_start vs z_0 abs_diff={z_init_diff:.6f}, "
+              f"z_start std={latents.std().item():.3f}, z_0 std={z_0_packed.std().item():.3f}")
+
     with self.progress_bar(total=len(timesteps)) as progress_bar:
         for i, t in enumerate(timesteps):
             if self.interrupt:
@@ -567,7 +578,19 @@ def inference_edit(
                 t_next_norm = t_next / self.scheduler.config.num_train_timesteps
                 z_known = t_next_norm * z_1 + (1.0 - t_next_norm) * z_0_packed
                 mask_blend = packed_mask.to(dtype=latents.dtype)
+                if i == 0:
+                    diff_before = (latents - z_known).abs().mean().item()
                 latents = latents * mask_blend + z_known * (1.0 - mask_blend)
+                if i == 0:
+                    diff_after = (latents - z_known).abs().mean().item()
+                    print(f"[EDIT DEBUG] step0: diff_before_blend={diff_before:.6f}, "
+                          f"diff_after_blend={diff_after:.6f}, "
+                          f"mask_max={mask_blend.max().item():.3f}")
+                if i == len(timesteps) - 1:
+                    final_diff_masked = ((latents - z_known) * mask_blend).abs().mean().item()
+                    final_diff_unmasked = ((latents - z_known) * (1 - mask_blend)).abs().mean().item()
+                    print(f"[EDIT DEBUG] final step: diff_masked={final_diff_masked:.6f}, "
+                          f"diff_unmasked={final_diff_unmasked:.6f}")
 
             if callback_on_step_end is not None:
                 callback_kwargs = {}
