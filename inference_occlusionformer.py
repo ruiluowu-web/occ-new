@@ -122,9 +122,9 @@ def parse_args() -> InferenceConfig:
     parser.add_argument(
         "--edit_strength",
         type=float,
-        default=0.7,
+        default=0.85,
         help="Edit strength in [0, 1]. Higher = more freedom in removed regions. "
-             "Default 0.7 is safe when using the same --seed as the original generation.",
+             "Default 0.85 is safe when using the same --seed as the original generation.",
     )
     parser.add_argument(
         "--dtype",
@@ -497,11 +497,7 @@ def run_edit_layout(
 
     edited_layout = full_layout.filter_entries(keep_ids, height, width)
 
-    kept_captions = [boxes[i]["caption"].strip() for i in keep_ids if boxes[i].get("caption", "").strip()]
-    if kept_captions:
-        final_prompt = f"{prompt}, {', '.join(kept_captions)}"
-    else:
-        final_prompt = prompt
+    final_prompt = prompt
 
     init_image = Image.open(init_image_path).convert("RGB")
 
@@ -516,7 +512,7 @@ def run_edit_layout(
         num_inference_steps=int(cfg.steps),
         guidance_scale=float(cfg.guidance_scale),
         enable_layout=bool(cfg.enable_layout),
-        grounding_ratio=float(cfg.grounding_ratio),
+        grounding_ratio=1.0,
         edit_strength=float(edit_strength),
         seed=int(cfg.seed),
         height=height,
