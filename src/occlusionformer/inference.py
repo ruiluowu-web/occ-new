@@ -525,6 +525,8 @@ def inference_edit(
 
     num_grounding_steps = int(grounding_ratio * len(timesteps))
 
+    self.scheduler._step_index = start_idx
+
     with self.progress_bar(total=len(timesteps)) as progress_bar:
         for i, t in enumerate(timesteps):
             if self.interrupt:
