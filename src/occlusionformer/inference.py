@@ -456,8 +456,6 @@ def inference_edit(
               f"min={packed_mask.min().item():.3f}, max={packed_mask.max().item():.3f}, "
               f"mean={packed_mask.mean().item():.3f}, "
               f"sum>0.5={(packed_mask > 0.5).sum().item()}")
-        print(f"[EDIT DEBUG] t_0_val={t_0_val:.1f}, start_idx={start_idx}, "
-              f"edit_steps={len(timesteps)}, t_range=[{timesteps[0].item():.0f},{timesteps[-1].item():.0f}]")
 
     latent_image_ids = self._prepare_latent_image_ids(
         batch_size, latent_h // 2, latent_w // 2, device, prompt_embeds.dtype
@@ -522,6 +520,10 @@ def inference_edit(
     t_0_norm = t_0_val / self.scheduler.config.num_train_timesteps
     z_start = t_0_norm * z_1 + (1.0 - t_0_norm) * z_0_packed
     latents = z_start.to(dtype=prompt_embeds.dtype)
+
+    if packed_mask is not None:
+        print(f"[EDIT DEBUG] t_0_val={t_0_val:.1f}, start_idx={start_idx}, "
+              f"edit_steps={len(timesteps)}, t_range=[{timesteps[0].item():.0f},{timesteps[-1].item():.0f}]")
 
     num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
     self._num_timesteps = len(timesteps)
