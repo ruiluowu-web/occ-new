@@ -482,10 +482,10 @@ def inference_edit(
         self.scheduler, num_inference_steps, device, timesteps, sigmas, mu=mu,
     )
 
-    edit_start_idx = int(torch.searchsorted(
-        -full_timesteps, -edit_strength, right=False
-    ).clamp(0, len(full_timesteps) - 1).item())
-    timesteps = full_timesteps[edit_start_idx:]
+    t_target = edit_strength * self.scheduler.config.num_train_timesteps
+    start_idx = int((full_timesteps > t_target).int().sum().item())
+    start_idx = min(start_idx, len(full_timesteps) - 1)
+    timesteps = full_timesteps[start_idx:]
 
     num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
     self._num_timesteps = len(timesteps)
