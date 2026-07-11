@@ -497,6 +497,15 @@ def run_edit_layout(
 
     edited_layout = full_layout.filter_entries(keep_ids, height, width)
 
+    removed_bboxes = [boxes[rid]["bbox"] for rid in remove_0based]
+    edit_mask = torch.zeros((height, width), dtype=torch.float32)
+    for x1, y1, x2, y2 in removed_bboxes:
+        x1c = max(0, int(x1))
+        y1c = max(0, int(y1))
+        x2c = min(width, int(x2))
+        y2c = min(height, int(y2))
+        edit_mask[y1c:y2c, x1c:x2c] = 1.0
+
     final_prompt = prompt
 
     init_image = Image.open(init_image_path).convert("RGB")
@@ -507,6 +516,7 @@ def run_edit_layout(
         layout_transformer=layout_transformer,
         init_image=init_image,
         layout=edited_layout,
+        edit_mask=edit_mask,
         prompt=final_prompt,
         generator=generator,
         num_inference_steps=int(cfg.steps),
