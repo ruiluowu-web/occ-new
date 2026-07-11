@@ -514,8 +514,11 @@ def inference_edit(
 
     t_0_val = timesteps[0].item()
     t_0_norm = t_0_val / self.scheduler.config.num_train_timesteps
-    latents = t_0_norm * z_1 + (1.0 - t_0_norm) * z_0_packed
-    latents = latents.to(dtype=prompt_embeds.dtype)
+    z_start = t_0_norm * z_1 + (1.0 - t_0_norm) * z_0_packed
+    if packed_mask is not None:
+        mask_erase = packed_mask.to(dtype=z_start.dtype)
+        z_start = z_1 * mask_erase + z_start * (1.0 - mask_erase)
+    latents = z_start.to(dtype=prompt_embeds.dtype)
 
     num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
     self._num_timesteps = len(timesteps)
@@ -561,8 +564,9 @@ def inference_edit(
                     latents = latents.to(latents_dtype)
 
             if packed_mask is not None:
-                t_norm = t.item() / self.scheduler.config.num_train_timesteps
-                z_known = t_norm * z_1 + (1.0 - t_norm) * z_0_packed
+                t_next = timesteps[i + 1].item() if i + 1 < len(timesteps) else 0.0
+                t_next_norm = t_next / self.scheduler.config.num_train_timesteps
+                z_known = t_next_norm * z_1 + (1.0 - t_next_norm) * z_0_packed
                 mask_blend = packed_mask.to(dtype=latents.dtype)
                 latents = latents * mask_blend + z_known * (1.0 - mask_blend)
 

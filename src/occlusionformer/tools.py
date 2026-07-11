@@ -467,13 +467,15 @@ class Layout:
         return new_layout
 
     def show_layout_on_image(self, image: Image.Image) -> Image.Image:
-        def draw(img_bgr: np.ndarray, boxes: torch.Tensor, labels: list[str]) -> np.ndarray:
+        def draw(img_bgr: np.ndarray, boxes: torch.Tensor, labels: list[str], cond_masks: torch.Tensor) -> np.ndarray:
             h, w, _ = img_bgr.shape
             _, bgr = generate_distinct_palette(self.max_objs)
             font = cv2.FONT_HERSHEY_SIMPLEX
             label_color = (255, 255, 255)
 
             for i in range(len(boxes)):
+                if cond_masks[i] == 0:
+                    continue
                 color = bgr[i % len(bgr)] if bgr else (0, 255, 0)
                 (x1, y1), (x2, y2) = boxes[i][:2], boxes[i][-2:]
                 x1, y1, x2, y2 = int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)
@@ -491,7 +493,7 @@ class Layout:
             if arr.ndim == 2:
                 arr = np.stack([arr] * 3, axis=-1)
             bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-            bgr = draw(bgr, self.boxes.clone(), self.categorys)
+            bgr = draw(bgr, self.boxes.clone(), self.categorys, self.cond_masks)
             return Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
         raise NotImplementedError("Only PIL.Image is supported here.")
 
