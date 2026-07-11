@@ -563,7 +563,8 @@ def inference_edit(
             if packed_mask is not None:
                 t_norm = t.item() / self.scheduler.config.num_train_timesteps
                 z_known = t_norm * z_1 + (1.0 - t_norm) * z_0_packed
-                latents = latents * packed_mask + z_known * (1.0 - packed_mask)
+                mask_blend = packed_mask.to(dtype=latents.dtype)
+                latents = latents * mask_blend + z_known * (1.0 - mask_blend)
 
             if callback_on_step_end is not None:
                 callback_kwargs = {}
