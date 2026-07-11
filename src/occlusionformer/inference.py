@@ -357,7 +357,7 @@ def inference_edit(
     edit_mask: Optional[torch.Tensor] = None,
     enable_layout: bool = True,
     grounding_ratio: float = 1.0,
-    edit_strength: float = 0.85,
+    edit_strength: float = 0.9,
     seed: int = 0,
     **params,
 ):

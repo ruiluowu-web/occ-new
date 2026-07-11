@@ -122,9 +122,9 @@ def parse_args() -> InferenceConfig:
     parser.add_argument(
         "--edit_strength",
         type=float,
-        default=0.85,
+        default=0.9,
         help="Edit strength in [0, 1]. Higher = more freedom in removed regions. "
-             "Default 0.85 is safe when using the same --seed as the original generation.",
+             "Default 0.9 is safe when using the same --seed as the original generation.",
     )
     parser.add_argument(
         "--dtype",
@@ -505,6 +505,15 @@ def run_edit_layout(
         x2c = min(width, int(x2))
         y2c = min(height, int(y2))
         edit_mask[y1c:y2c, x1c:x2c] = 1.0
+
+    kernel_size = int(2 * round(3 * 5.0) + 1)
+    x_k = torch.arange(kernel_size, dtype=torch.float32) - kernel_size // 2
+    g = torch.exp(-x_k**2 / (2 * 5.0**2))
+    g = g / g.sum()
+    edit_mask = edit_mask.unsqueeze(0).unsqueeze(0)
+    edit_mask = torch.nn.functional.conv2d(edit_mask, g.view(1, 1, 1, -1), padding='same')
+    edit_mask = torch.nn.functional.conv2d(edit_mask, g.view(1, 1, -1, 1), padding='same')
+    edit_mask = edit_mask.squeeze().clamp(0, 1)
 
     final_prompt = prompt
 
