@@ -36,6 +36,7 @@ class InferenceConfig:
     edit_remove_ids: Optional[str]
     init_image: Optional[str]
     edit_strength: float
+    edit_prompt: Optional[str]
 
 
 def parse_args() -> InferenceConfig:
@@ -127,6 +128,13 @@ def parse_args() -> InferenceConfig:
              "Default 0.9 is safe when using the same --seed as the original generation.",
     )
     parser.add_argument(
+        "--edit_prompt",
+        type=str,
+        default=None,
+        help="Custom prompt for editing. If not set, uses the original layout prompt. "
+             "Recommended to exclude descriptions of removed objects.",
+    )
+    parser.add_argument(
         "--dtype",
         type=str,
         choices=["bf16", "fp16", "fp32"],
@@ -189,6 +197,7 @@ def parse_args() -> InferenceConfig:
         edit_remove_ids=args.edit_remove_ids,
         init_image=args.init_image,
         edit_strength=args.edit_strength,
+        edit_prompt=args.edit_prompt,
     )
 
 
@@ -519,7 +528,7 @@ def run_edit_layout(
     edit_mask = torch.nn.functional.conv2d(edit_mask, g.view(1, 1, -1, 1), padding='same')
     edit_mask = edit_mask.squeeze().clamp(0, 1)
 
-    final_prompt = prompt
+    final_prompt = cfg.edit_prompt if cfg.edit_prompt else prompt
 
     init_image = Image.open(init_image_path).convert("RGB")
 
