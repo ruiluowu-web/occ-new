@@ -545,7 +545,7 @@ def inference_edit(
                     removed_masks.append(fg_probs[old_idx])
             if removed_masks:
                 combined = torch.stack(removed_masks, dim=0).max(dim=0).values
-                predicted_mask_packed = (combined > 0.55).float().unsqueeze(0).unsqueeze(-1)
+                predicted_mask_packed = combined.clamp(0, 1).unsqueeze(0).unsqueeze(-1)
 
     if predicted_mask_packed is not None:
         if packed_mask is not None:
