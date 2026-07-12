@@ -576,6 +576,12 @@ def inference_edit(
     t_0_val = timesteps[0].item()
     t_0_norm = t_0_val / self.scheduler.config.num_train_timesteps
     z_start = t_0_norm * z_1 + (1.0 - t_0_norm) * z_0_packed
+    if packed_mask is not None:
+        m = packed_mask.to(dtype=z_start.dtype)
+        z_start = z_1 * m + z_start * (1.0 - m)
+        print(f"[EDIT DEBUG] MaskedLatentErase: mask max={packed_mask.max().item():.3f}, "
+              f"sum>0={(packed_mask > 0).sum().item()}, "
+              f"z_start[masked] std={z_start[packed_mask.expand_as(z_start) > 0.5].std().item():.4f}")
     latents = z_start.to(dtype=prompt_embeds.dtype)
 
     if packed_mask is not None:
