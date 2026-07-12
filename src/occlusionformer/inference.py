@@ -355,6 +355,8 @@ def inference_edit(
     init_image,
     layout: Optional[Layout] = None,
     edit_mask: Optional[torch.Tensor] = None,
+    full_layout: Optional[Layout] = None,
+    remove_0based: Optional[List[int]] = None,
     enable_layout: bool = True,
     grounding_ratio: float = 1.0,
     edit_strength: float = 0.9,
@@ -495,6 +497,61 @@ def inference_edit(
     else:
         layout_kwargs = None
         enable_layout = False
+
+    predicted_mask_packed = None
+    if full_layout is not None and remove_0based:
+        full_lh = int(height) // vae_scale // 2
+        full_lw = int(width) // vae_scale // 2
+        full_layout_kwargs = encode_layout_flux(full_layout, self, (full_lh, full_lw))
+        if (hasattr(full_layout, 'occluder') and hasattr(full_layout, 'bbox_masks')
+                and full_layout.occluder is not None and full_layout.bbox_masks is not None):
+            full_bbox_masks = full_layout.bbox_masks
+            full_bbox_ds = torch.nn.functional.interpolate(
+                full_bbox_masks.unsqueeze(1).to(device=device, dtype=prompt_embeds.dtype),
+                size=(full_lh * 2, full_lw * 2),
+                mode='bilinear', align_corners=False,
+            ).squeeze(1)
+            full_packed = []
+            for layout_idx in range(full_bbox_ds.shape[0]):
+                mp = FluxPipeline._pack_latents(
+                    full_bbox_ds[layout_idx].unsqueeze(0).unsqueeze(0),
+                    batch_size=1, num_channels_latents=1,
+                    height=full_lh * 2, width=full_lw * 2,
+                )
+                full_packed.append(mp.squeeze(0)[..., 0:1])
+            full_layout_kwargs["layout"]["occlusion"] = full_layout.occluder
+            full_layout_kwargs["layout"]["bbox_mask"] = full_packed
+            full_layout_kwargs["layout"]["img_height"] = full_lh
+            full_layout_kwargs["layout"]["img_width"] = full_lw
+
+        g_probe = torch.tensor([guidance_scale], device=device) if layout_transformer.config.guidance_embeds else None
+        probe_out = layout_transformer(
+            layout_kwargs=full_layout_kwargs, enable_layout=True,
+            hidden_states=z_0_packed,
+            timestep=torch.zeros(1, device=device),
+            guidance=g_probe,
+            pooled_projections=pooled_prompt_embeds,
+            encoder_hidden_states=prompt_embeds,
+            txt_ids=text_ids, img_ids=latent_image_ids,
+            joint_attention_kwargs=self.joint_attention_kwargs,
+            return_dict=True,
+        )
+        if hasattr(probe_out, 'z_buffer_masks') and probe_out.z_buffer_masks:
+            last_mask = probe_out.z_buffer_masks[-1]
+            fg_probs = torch.nn.functional.softmax(last_mask, dim=-1)[..., 1]
+            removed_masks = []
+            for old_idx in remove_0based:
+                if old_idx < fg_probs.shape[0]:
+                    removed_masks.append(fg_probs[old_idx])
+            if removed_masks:
+                combined = torch.stack(removed_masks, dim=0).max(dim=0).values
+                predicted_mask_packed = combined.unsqueeze(0).unsqueeze(-1)
+
+    if predicted_mask_packed is not None:
+        packed_mask = predicted_mask_packed.to(dtype=prompt_embeds.dtype)
+        print(f"[EDIT DEBUG] using predicted_mask from probe pass, "
+              f"shape={packed_mask.shape}, min={packed_mask.min().item():.3f}, "
+              f"max={packed_mask.max().item():.3f}")
 
     image_seq_len = z_0_packed.shape[1]
     mu = calculate_shift(

@@ -539,6 +539,8 @@ def run_edit_layout(
         init_image=init_image,
         layout=edited_layout,
         edit_mask=edit_mask,
+        full_layout=full_layout,
+        remove_0based=remove_0based,
         prompt=final_prompt,
         generator=generator,
         num_inference_steps=int(cfg.steps),
