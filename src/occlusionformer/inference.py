@@ -682,6 +682,9 @@ def inference_edit(
         latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
         decoded = self.vae.decode(latents.to(self.vae.dtype), return_dict=False)[0]
         if packed_mask is not None:
+            print(f"[EDIT DEBUG] pixel compose executing: mask shape={packed_mask.shape}, "
+                  f"decoded shape={decoded.shape}, img_tensor shape={img_tensor.shape}, "
+                  f"mask sum>0.5={(packed_mask > 0.5).sum().item()}")
             mask_pixel = torch.nn.functional.interpolate(
                 packed_mask.reshape(1, latent_h // 2, latent_w // 2, 1).permute(0, 3, 1, 2),
                 size=(height, width), mode='bilinear', align_corners=False,
