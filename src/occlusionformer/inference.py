@@ -524,11 +524,12 @@ def inference_edit(
             full_layout_kwargs["layout"]["img_height"] = full_lh
             full_layout_kwargs["layout"]["img_width"] = full_lw
 
+        z_probe = 0.5 * z_1 + 0.5 * z_0_packed
         g_probe = torch.tensor([guidance_scale], device=device) if layout_transformer.config.guidance_embeds else None
         probe_out = layout_transformer(
             layout_kwargs=full_layout_kwargs, enable_layout=True,
-            hidden_states=z_0_packed,
-            timestep=torch.zeros(1, device=device),
+            hidden_states=z_probe,
+            timestep=torch.full((1,), 500.0, device=device),
             guidance=g_probe,
             pooled_projections=pooled_prompt_embeds,
             encoder_hidden_states=prompt_embeds,
@@ -545,7 +546,7 @@ def inference_edit(
                     removed_masks.append(fg_probs[old_idx])
             if removed_masks:
                 combined = torch.stack(removed_masks, dim=0).max(dim=0).values
-                predicted_mask_packed = combined.clamp(0, 1).unsqueeze(0).unsqueeze(-1)
+                predicted_mask_packed = (combined > 0.55).float().unsqueeze(0).unsqueeze(-1)
 
     if predicted_mask_packed is not None:
         if packed_mask is not None:
