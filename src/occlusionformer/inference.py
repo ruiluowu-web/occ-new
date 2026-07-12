@@ -680,8 +680,15 @@ def inference_edit(
     else:
         latents = self._unpack_latents(latents, height, width, vae_scale)
         latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
-        image = self.vae.decode(latents.to(self.vae.dtype), return_dict=False)[0]
-        image = self.image_processor.postprocess(image, output_type=output_type)
+        decoded = self.vae.decode(latents.to(self.vae.dtype), return_dict=False)[0]
+        if packed_mask is not None:
+            mask_pixel = torch.nn.functional.interpolate(
+                packed_mask.reshape(1, latent_h // 2, latent_w // 2, 1).permute(0, 3, 1, 2),
+                size=(height, width), mode='bilinear', align_corners=False,
+            )
+            mask_pixel = mask_pixel.to(dtype=decoded.dtype, device=decoded.device)
+            decoded = decoded * mask_pixel + img_tensor * (1.0 - mask_pixel)
+        image = self.image_processor.postprocess(decoded, output_type=output_type)
 
     self.maybe_free_model_hooks()
 
