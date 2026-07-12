@@ -548,6 +548,11 @@ def inference_edit(
                 predicted_mask_packed = (combined > 0.55).float().unsqueeze(0).unsqueeze(-1)
 
     if predicted_mask_packed is not None:
+        if packed_mask is not None:
+            bbox_clip = (packed_mask > 0.5).to(dtype=predicted_mask_packed.dtype)
+            predicted_mask_packed = predicted_mask_packed * bbox_clip
+            print(f"[EDIT DEBUG] predicted_mask clipped to bbox, "
+                  f"after clip sum>0.5={(predicted_mask_packed > 0.5).sum().item()}")
         packed_mask = predicted_mask_packed.to(dtype=prompt_embeds.dtype)
         print(f"[EDIT DEBUG] using predicted_mask from probe pass, "
               f"shape={packed_mask.shape}, min={packed_mask.min().item():.3f}, "
